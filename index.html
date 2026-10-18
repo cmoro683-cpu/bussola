@@ -6,28 +6,31 @@
 <title>Bussola</title>
 <style>
   body { margin:0; font-family:sans-serif; background:#111; color:#fff; text-align:center; }
-  #gradi { font-size:3.5em; margin-top:8vh; }
+  #gradi { font-size:3.5em; margin-top:6vh; }
   #punto { font-size:1.5em; opacity:.8; }
-  #freccia { font-size:9em; margin-top:6vh; transition:transform .1s; }
-  #info { font-size:1.3em; margin-top:3vh; }
-  button { font-size:1.2em; padding:12px 24px; margin-top:5vh; }
+  #freccia { font-size:9em; margin-top:4vh; display:none; }
+  #info { font-size:1.3em; margin-top:2vh; }
+  #stato { font-size:.9em; opacity:.6; margin-top:4vh; padding:0 16px; }
 </style>
 </head>
 <body>
 <div id="gradi">--</div>
 <div id="punto"></div>
-<div id="freccia" style="display:none">⬆️</div>
+<div id="freccia">⬆️</div>
 <div id="info"></div>
-<button id="avvia" style="display:none">Attiva bussola</button>
+<div id="stato">Attendo i sensori...</div>
 
 <script>
 var punti = ["Nord","Nord-Est","Est","Sud-Est","Sud","Sud-Ovest","Ovest","Nord-Ovest"];
+var rad = Math.PI / 180;
 var params = new URLSearchParams(location.search);
 var autoLat = parseFloat(params.get("lat"));
 var autoLon = parseFloat(params.get("lon"));
 var haAuto = !isNaN(autoLat) && !isNaN(autoLon);
 var mioLat = null, mioLon = null;
-var rad = Math.PI / 180;
+var eventi = 0;
+var usaAssoluto = false;
+var statoEl = document.getElementById("stato");
 
 function bearing(lat1, lon1, lat2, lon2) {
   var y = Math.sin((lon2 - lon1) * rad) * Math.cos(lat2 * rad);
@@ -42,39 +45,63 @@ function distanza(lat1, lon1, lat2, lon2) {
   return 6371000 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
-function onOrientation(e) {
-  var h;
-  if (e.webkitCompassHeading !== undefined) { h = e.webkitCompassHeading; }
-  else if (e.alpha !== null) { h = (360 - e.alpha) % 360; }
-  else return;
+// Direzione verso cui punta il retro del telefono, compensata dall'inclinazione
+function headingDa(alpha, beta, gamma) {
+  var x = beta * rad, y = gamma * rad, z = alpha * rad;
+  var cY = Math.cos(y), cZ = Math.cos(z), sX = Math.sin(x), sY = Math.sin(y), sZ = Math.sin(z);
+  var vx = -cZ * sY - sZ * sX * cY;
+  var vy = -sZ * sY + cZ * sX * cY;
+  var h = Math.atan(vx / vy);
+  if (vy < 0) h += Math.PI; else if (vx < 0) h += 2 * Math.PI;
+  return h / rad;
+}
+
+function aggiorna(e, assoluto) {
+  // Se esiste l'evento assoluto, ignoro quello relativo
+  if (usaAssoluto && !assoluto) return;
+  if (assoluto) usaAssoluto = true;
+  if (e.alpha === null || e.alpha === undefined) return;
+
+  eventi++;
+  var h = (e.webkitCompassHeading !== undefined)
+    ? e.webkitCompassHeading
+    : headingDa(e.alpha, e.beta || 0, e.gamma || 0);
+
   document.getElementById("gradi").textContent = Math.round(h) + "°";
   document.getElementById("punto").textContent = punti[Math.round(h / 45) % 8];
+  statoEl.textContent = "Sensore attivo (" + (usaAssoluto ? "assoluto" : "relativo, poco affidabile") + ")";
 
-  if (haAuto && mioLat !== null) {
-    var b = bearing(mioLat, mioLon, autoLat, autoLon);
-    var d = distanza(mioLat, mioLon, autoLat, autoLon);
-    var f = document.getElementById("freccia");
-    f.style.display = "block";
-    f.style.transform = "rotate(" + (b - h) + "deg)";
-    document.getElementById("info").textContent =
-      "Auto a " + (d < 1000 ? Math.round(d) + " m" : (d/1000).toFixed(1) + " km");
-  } else if (haAuto) {
-    document.getElementById("info").textContent = "Attendo il GPS...";
+  if (haAuto) {
+    if (mioLat !== null) {
+      var b = bearing(mioLat, mioLon, autoLat, autoLon);
+      var d = distanza(mioLat, mioLon, autoLat, autoLon);
+      var f = document.getElementById("freccia");
+      f.style.display = "block";
+      f.style.transform = "rotate(" + (b - h) + "deg)";
+      document.getElementById("info").textContent =
+        "Auto a " + (d < 1000 ? Math.round(d) + " m" : (d / 1000).toFixed(1) + " km");
+    } else {
+      document.getElementById("info").textContent = "Attendo il GPS...";
+    }
   }
 }
 
-function avvia() {
-  window.addEventListener("deviceorientationabsolute", onOrientation, true);
-  window.addEventListener("deviceorientation", onOrientation, true);
-  if (haAuto && navigator.geolocation) {
-    navigator.geolocation.watchPosition(function (p) {
-      mioLat = p.coords.latitude; mioLon = p.coords.longitude;
-    }, function () {
-      document.getElementById("info").textContent = "Permesso posizione negato";
-    }, { enableHighAccuracy: true });
-  }
+window.addEventListener("deviceorientationabsolute", function (e) { aggiorna(e, true); }, true);
+window.addEventListener("deviceorientation", function (e) { aggiorna(e, false); }, true);
+
+if (haAuto && navigator.geolocation) {
+  navigator.geolocation.watchPosition(function (p) {
+    mioLat = p.coords.latitude; mioLon = p.coords.longitude;
+  }, function (err) {
+    document.getElementById("info").textContent = "GPS non disponibile: " + err.message;
+  }, { enableHighAccuracy: true });
 }
-avvia();
+
+setTimeout(function () {
+  if (eventi === 0) {
+    statoEl.textContent = "Nessun dato dai sensori. Controlla: browser Chrome, permesso 'Sensori di movimento' consentito per il sito.";
+  }
+}, 3000);
 </script>
 </body>
 </html>
